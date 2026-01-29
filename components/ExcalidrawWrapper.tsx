@@ -6,12 +6,18 @@ import "@excalidraw/excalidraw/index.css";
 
 interface Props {
   onAPIReady: (api: ExcalidrawImperativeAPI) => void;
+  onCanvasChange?: (elements: readonly unknown[]) => void;
 }
 
-export default function ExcalidrawWrapper({ onAPIReady }: Props) {
+export default function ExcalidrawWrapper({ onAPIReady, onCanvasChange }: Props) {
   return (
     <div style={{ width: "100%", height: "100%" }}>
-      <Excalidraw excalidrawAPI={onAPIReady} />
+      <Excalidraw
+        excalidrawAPI={onAPIReady}
+        onChange={(elements) => {
+          onCanvasChange?.(elements);
+        }}
+      />
     </div>
   );
 }

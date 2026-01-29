@@ -1,23 +1,54 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
 import { SYSTEM_PROMPT } from "@/lib/prompts";
+
+interface ChatMessage {
+  role: "system" | "user" | "assistant";
+  content: string;
+}
 
 export async function POST(req: NextRequest) {
   const baseUrl = process.env.LLM_BASE_URL || "http://localhost:11434/v1";
   const model = process.env.LLM_MODEL || "llama3";
   const timeoutMs = Number(process.env.LLM_TIMEOUT_MS) || 120000;
 
-  let body: { message: string };
+  let body: {
+    messages: Array<{ role: string; content: string }>;
+    canvasContext?: string;
+  };
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+    return new Response(JSON.stringify({ error: "Invalid JSON body" }), {
+      status: 400,
+      headers: { "Content-Type": "application/json" },
+    });
   }
 
-  if (!body.message || typeof body.message !== "string") {
-    return NextResponse.json(
-      { error: "message field is required" },
-      { status: 400 },
+  if (!Array.isArray(body.messages) || body.messages.length === 0) {
+    return new Response(
+      JSON.stringify({ error: "messages array is required" }),
+      { status: 400, headers: { "Content-Type": "application/json" } },
     );
+  }
+
+  // Build LLM messages: system prompt + optional canvas context + conversation history (last 10)
+  const llmMessages: ChatMessage[] = [];
+
+  let systemContent = SYSTEM_PROMPT;
+  if (body.canvasContext) {
+    systemContent += `\n\n## Current Canvas State\n${body.canvasContext}`;
+  }
+  llmMessages.push({ role: "system", content: systemContent });
+
+  // Take last 10 messages to prevent token overflow
+  const recentMessages = body.messages.slice(-10);
+  for (const msg of recentMessages) {
+    if (msg.role === "user" || msg.role === "assistant") {
+      llmMessages.push({
+        role: msg.role as "user" | "assistant",
+        content: msg.content,
+      });
+    }
   }
 
   const controller = new AbortController();
@@ -30,61 +61,136 @@ export async function POST(req: NextRequest) {
       signal: controller.signal,
       body: JSON.stringify({
         model,
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: body.message },
-        ],
+        messages: llmMessages,
         response_format: { type: "json_object" },
         temperature: 0.3,
+        stream: true,
       }),
     });
 
     if (!response.ok) {
       const text = await response.text();
-      return NextResponse.json(
-        { error: `LLM server error: ${response.status}`, detail: text },
-        { status: 502 },
+      return new Response(
+        JSON.stringify({
+          error: `LLM server error: ${response.status}`,
+          detail: text,
+        }),
+        { status: 502, headers: { "Content-Type": "application/json" } },
       );
     }
 
-    const data = await response.json();
-    const content = data.choices?.[0]?.message?.content;
-
-    if (!content) {
-      return NextResponse.json(
-        { error: "No content in LLM response" },
-        { status: 502 },
+    // If the LLM doesn't support streaming, fall back to non-streaming
+    const contentType = response.headers.get("content-type") || "";
+    if (
+      !contentType.includes("text/event-stream") &&
+      !contentType.includes("text/plain") &&
+      contentType.includes("application/json")
+    ) {
+      // Non-streaming response
+      const data = await response.json();
+      const content = data.choices?.[0]?.message?.content;
+      if (!content) {
+        return new Response(
+          JSON.stringify({ error: "No content in LLM response" }),
+          { status: 502, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response(
+        JSON.stringify({ content, done: true }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
       );
     }
 
-    let parsed: { elements?: unknown[] };
-    try {
-      parsed = JSON.parse(content);
-    } catch {
-      return NextResponse.json(
-        { error: "LLM returned invalid JSON", raw: content },
-        { status: 502 },
-      );
-    }
+    // Streaming SSE response - relay to client
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      async start(streamController) {
+        const reader = response.body?.getReader();
+        if (!reader) {
+          streamController.enqueue(
+            encoder.encode(
+              `data: ${JSON.stringify({ error: "No response body" })}\n\n`,
+            ),
+          );
+          streamController.close();
+          return;
+        }
 
-    if (!Array.isArray(parsed.elements) || parsed.elements.length === 0) {
-      return NextResponse.json(
-        { error: "LLM response missing elements array", raw: parsed },
-        { status: 502 },
-      );
-    }
+        const decoder = new TextDecoder();
+        let buffer = "";
 
-    return NextResponse.json({ elements: parsed.elements });
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop() || "";
+
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (!trimmed || !trimmed.startsWith("data: ")) continue;
+
+              const payload = trimmed.slice(6);
+              if (payload === "[DONE]") {
+                streamController.enqueue(encoder.encode("data: [DONE]\n\n"));
+                continue;
+              }
+
+              try {
+                const chunk = JSON.parse(payload);
+                const delta = chunk.choices?.[0]?.delta?.content;
+                if (delta) {
+                  streamController.enqueue(
+                    encoder.encode(
+                      `data: ${JSON.stringify({ token: delta })}\n\n`,
+                    ),
+                  );
+                }
+              } catch {
+                // Skip malformed chunks
+              }
+            }
+          }
+        } catch (err) {
+          if (
+            err instanceof DOMException &&
+            err.name === "AbortError"
+          ) {
+            streamController.enqueue(
+              encoder.encode(
+                `data: ${JSON.stringify({ error: "Request aborted" })}\n\n`,
+              ),
+            );
+          }
+        } finally {
+          streamController.close();
+          reader.releaseLock();
+        }
+      },
+    });
+
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+      },
+    });
   } catch (err) {
     if (err instanceof DOMException && err.name === "AbortError") {
-      return NextResponse.json(
-        { error: "LLM request timed out" },
-        { status: 504 },
+      return new Response(
+        JSON.stringify({ error: "LLM request timed out" }),
+        { status: 504, headers: { "Content-Type": "application/json" } },
       );
     }
-    return NextResponse.json(
-      { error: "Failed to reach LLM server", detail: String(err) },
-      { status: 502 },
+    return new Response(
+      JSON.stringify({
+        error: "Failed to reach LLM server",
+        detail: String(err),
+      }),
+      { status: 502, headers: { "Content-Type": "application/json" } },
     );
   } finally {
     clearTimeout(timeout);
