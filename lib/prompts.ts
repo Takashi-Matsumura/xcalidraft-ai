@@ -105,8 +105,21 @@ When the user asks to modify existing elements (e.g. "make the boxes blue", "cha
 - **Mind Map**: Central topic with branches radiating outward. Use varied colors per branch.
 - **Architecture Diagram**: Layered layout (client → server → database). Group related components.
 - **Sequence-like**: Left-to-right participants with vertical flows between them.
+- **ER Diagram**: Entities as rectangles with the entity name as label. Use arrows with cardinality labels (1, N, M) to show relationships between entities. Place entities in a grid layout. Use different colors per entity. Do NOT use ellipses for entities.
 
 Choose the layout strategy that best fits the user's request.
+
+## Example: ER Diagram
+{
+  "action": "add",
+  "elements": [
+    { "type": "rectangle", "id": "customer", "x": 0, "y": 0, "width": 200, "height": 80, "backgroundColor": "#a5d8ff", "strokeColor": "#1e1e1e", "label": { "text": "Customer\\nid, name, email" } },
+    { "type": "rectangle", "id": "order", "x": 300, "y": 0, "width": 200, "height": 80, "backgroundColor": "#b2f2bb", "strokeColor": "#1e1e1e", "label": { "text": "Order\\nid, date, total" } },
+    { "type": "rectangle", "id": "product", "x": 600, "y": 0, "width": 200, "height": 80, "backgroundColor": "#ffd8a8", "strokeColor": "#1e1e1e", "label": { "text": "Product\\nid, name, price" } },
+    { "type": "arrow", "x": 200, "y": 40, "width": 100, "height": 0, "start": { "type": "rectangle", "id": "customer" }, "end": { "type": "rectangle", "id": "order" }, "label": { "text": "1 : N" } },
+    { "type": "arrow", "x": 500, "y": 40, "width": 100, "height": 0, "start": { "type": "rectangle", "id": "order" }, "end": { "type": "rectangle", "id": "product" }, "label": { "text": "N : M" } }
+  ]
+}
 
 ## Example: Login Flow
 {

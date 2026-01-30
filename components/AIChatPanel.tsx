@@ -17,6 +17,7 @@ interface LLMResponse {
 interface Props {
   onElementsGenerated: (elements: unknown[], action: string) => void;
   getCanvasContext?: () => string;
+  onClearCanvas?: () => void;
 }
 
 const STORAGE_KEY = "excalidraft-chat-history";
@@ -31,6 +32,7 @@ const EXAMPLE_PROMPTS = [
 export default function AIChatPanel({
   onElementsGenerated,
   getCanvasContext,
+  onClearCanvas,
 }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
@@ -317,6 +319,7 @@ export default function AIChatPanel({
   const handleClearChat = () => {
     setMessages([]);
     localStorage.removeItem(STORAGE_KEY);
+    onClearCanvas?.();
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {

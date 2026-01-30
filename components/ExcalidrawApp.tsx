@@ -212,6 +212,12 @@ export default function ExcalidrawApp() {
     return context;
   }, [api]);
 
+  const handleClearCanvas = useCallback(() => {
+    if (!api) return;
+    api.updateScene({ elements: [] });
+    localStorage.removeItem(CANVAS_STORAGE_KEY);
+  }, [api]);
+
   return (
     <div className="flex h-screen w-screen">
       <div className="flex-1 relative">
@@ -223,6 +229,7 @@ export default function ExcalidrawApp() {
       <AIChatPanel
         onElementsGenerated={handleElementsGenerated}
         getCanvasContext={getCanvasContext}
+        onClearCanvas={handleClearCanvas}
       />
     </div>
   );
