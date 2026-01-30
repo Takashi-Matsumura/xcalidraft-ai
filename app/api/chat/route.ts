@@ -7,13 +7,16 @@ interface ChatMessage {
 }
 
 export async function POST(req: NextRequest) {
-  const baseUrl = process.env.LLM_BASE_URL || "http://localhost:11434/v1";
-  const model = process.env.LLM_MODEL || "llama3";
   const timeoutMs = Number(process.env.LLM_TIMEOUT_MS) || 120000;
 
   let body: {
     messages: Array<{ role: string; content: string }>;
     canvasContext?: string;
+    llmSettings?: {
+      baseUrl?: string;
+      model?: string;
+      apiKey?: string;
+    };
   };
   try {
     body = await req.json();
@@ -23,6 +26,11 @@ export async function POST(req: NextRequest) {
       headers: { "Content-Type": "application/json" },
     });
   }
+
+  // Use client-provided settings, falling back to env vars
+  const baseUrl = body.llmSettings?.baseUrl || process.env.LLM_BASE_URL || "http://localhost:11434/v1";
+  const model = body.llmSettings?.model || process.env.LLM_MODEL || "llama3";
+  const apiKey = body.llmSettings?.apiKey || process.env.LLM_API_KEY || "";
 
   if (!Array.isArray(body.messages) || body.messages.length === 0) {
     return new Response(
@@ -55,9 +63,14 @@ export async function POST(req: NextRequest) {
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (apiKey) {
+      headers["Authorization"] = `Bearer ${apiKey}`;
+    }
+
     const response = await fetch(`${baseUrl}/chat/completions`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       signal: controller.signal,
       body: JSON.stringify({
         model,

@@ -14,6 +14,46 @@ interface LLMResponse {
   elements?: unknown[];
 }
 
+interface ProviderConfig {
+  baseUrl: string;
+  model: string;
+  apiKey: string;
+}
+
+interface LLMSettings {
+  activeProvider: string;
+  providers: Record<string, ProviderConfig>;
+}
+
+const PROVIDERS: Record<string, { label: string; defaultUrl: string; defaultModel: string }> = {
+  "ollama": { label: "Ollama", defaultUrl: "http://localhost:11434/v1", defaultModel: "llama3" },
+  "llama-cpp": { label: "llama.cpp", defaultUrl: "http://localhost:8080/v1", defaultModel: "default" },
+  "lm-studio": { label: "LM Studio", defaultUrl: "http://localhost:1234/v1", defaultModel: "default" },
+  "openai": { label: "OpenAI", defaultUrl: "https://api.openai.com/v1", defaultModel: "gpt-4o" },
+  "anthropic-openai": { label: "Anthropic (OpenAI互換)", defaultUrl: "https://api.anthropic.com/v1", defaultModel: "claude-sonnet-4-20250514" },
+  "custom": { label: "Custom", defaultUrl: "http://localhost:8080/v1", defaultModel: "" },
+};
+
+function getProviderConfig(settings: LLMSettings): ProviderConfig {
+  const key = settings.activeProvider;
+  return settings.providers[key] || getDefaultProviderConfig(key);
+}
+
+function getDefaultProviderConfig(providerKey: string): ProviderConfig {
+  const p = PROVIDERS[providerKey] || PROVIDERS.ollama;
+  return { baseUrl: p.defaultUrl, model: p.defaultModel, apiKey: "" };
+}
+
+const DEFAULT_SETTINGS: LLMSettings = {
+  activeProvider: "ollama",
+  providers: Object.fromEntries(
+    Object.entries(PROVIDERS).map(([key, p]) => [
+      key,
+      { baseUrl: p.defaultUrl, model: p.defaultModel, apiKey: "" },
+    ]),
+  ),
+};
+
 interface Props {
   onElementsGenerated: (elements: unknown[], action: string) => void;
   getCanvasContext?: () => string;
@@ -21,6 +61,7 @@ interface Props {
 }
 
 const STORAGE_KEY = "excalidraft-chat-history";
+const SETTINGS_STORAGE_KEY = "excalidraft-llm-settings";
 
 const EXAMPLE_PROMPTS = [
   "Draw a login flow chart",
@@ -38,11 +79,15 @@ export default function AIChatPanel({
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [streamingContent, setStreamingContent] = useState("");
+  const [showSettings, setShowSettings] = useState(false);
+  const [settings, setSettings] = useState<LLMSettings>(DEFAULT_SETTINGS);
+  const [testStatus, setTestStatus] = useState<"idle" | "testing" | "ok" | "error">("idle");
+  const [testMessage, setTestMessage] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // Restore chat history from localStorage on mount
+  // Restore chat history and settings from localStorage on mount
   useEffect(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
@@ -54,6 +99,32 @@ export default function AIChatPanel({
       }
     } catch {
       // Ignore corrupt data
+    }
+    try {
+      const savedSettings = localStorage.getItem(SETTINGS_STORAGE_KEY);
+      if (savedSettings) {
+        const parsed = JSON.parse(savedSettings);
+        // Migrate from old format (flat) to new format (per-provider)
+        if (parsed.providers) {
+          setSettings({
+            activeProvider: parsed.activeProvider || "ollama",
+            providers: { ...DEFAULT_SETTINGS.providers, ...parsed.providers },
+          });
+        } else if (parsed.provider) {
+          // Old format migration
+          const migrated = { ...DEFAULT_SETTINGS };
+          migrated.activeProvider = parsed.provider;
+          migrated.providers[parsed.provider] = {
+            baseUrl: parsed.baseUrl || getDefaultProviderConfig(parsed.provider).baseUrl,
+            model: parsed.model || getDefaultProviderConfig(parsed.provider).model,
+            apiKey: parsed.apiKey || "",
+          };
+          setSettings(migrated);
+          localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(migrated));
+        }
+      }
+    } catch {
+      // Ignore
     }
   }, []);
 
@@ -110,7 +181,15 @@ export default function AIChatPanel({
         const res = await fetch("/api/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ messages: apiMessages, canvasContext }),
+          body: JSON.stringify({
+            messages: apiMessages,
+            canvasContext,
+            llmSettings: {
+              baseUrl: getProviderConfig(settings).baseUrl,
+              model: getProviderConfig(settings).model,
+              apiKey: getProviderConfig(settings).apiKey || undefined,
+            },
+          }),
           signal: controller.signal,
         });
 
@@ -228,7 +307,7 @@ export default function AIChatPanel({
         scrollToBottom();
       }
     },
-    [loading, messages, cancelRequest, scrollToBottom, getCanvasContext],
+    [loading, messages, cancelRequest, scrollToBottom, getCanvasContext, settings],
   );
 
   const processLLMResponse = useCallback(
@@ -349,16 +428,135 @@ export default function AIChatPanel({
         <span className="font-semibold text-gray-800">
           AI Diagram Generator
         </span>
-        {messages.length > 0 && (
+        <div className="flex items-center gap-2">
+          {messages.length > 0 && (
+            <button
+              onClick={handleClearChat}
+              className="text-xs text-gray-400 hover:text-gray-600"
+              title="Clear chat history"
+            >
+              Clear
+            </button>
+          )}
           <button
-            onClick={handleClearChat}
-            className="text-xs text-gray-400 hover:text-gray-600"
-            title="Clear chat history"
+            onClick={() => setShowSettings((v) => !v)}
+            className="text-gray-400 hover:text-gray-600"
+            title="LLM Settings"
           >
-            Clear
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
+              <circle cx="12" cy="12" r="3"/>
+            </svg>
           </button>
-        )}
+        </div>
       </div>
+
+      {showSettings && (() => {
+        const activeKey = settings.activeProvider;
+        const current = getProviderConfig(settings);
+
+        const updateProvider = (field: keyof ProviderConfig, value: string) => {
+          const newSettings: LLMSettings = {
+            ...settings,
+            providers: {
+              ...settings.providers,
+              [activeKey]: { ...current, [field]: value },
+            },
+          };
+          setSettings(newSettings);
+          localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(newSettings));
+        };
+
+        return (
+          <div className="border-b border-gray-300 bg-gray-50 px-4 py-3 space-y-3">
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Provider</label>
+              <select
+                value={activeKey}
+                onChange={(e) => {
+                  const newSettings: LLMSettings = {
+                    ...settings,
+                    activeProvider: e.target.value,
+                  };
+                  setSettings(newSettings);
+                  setTestStatus("idle");
+                  setTestMessage("");
+                  localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(newSettings));
+                }}
+                className="w-full rounded border border-gray-300 px-2 py-1.5 text-sm text-gray-800 focus:border-blue-500 focus:outline-none"
+              >
+                {Object.entries(PROVIDERS).map(([key, { label }]) => (
+                  <option key={key} value={key}>{label}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Base URL</label>
+              <input
+                type="text"
+                value={current.baseUrl}
+                onChange={(e) => updateProvider("baseUrl", e.target.value)}
+                className="w-full rounded border border-gray-300 px-2 py-1.5 text-sm text-gray-800 focus:border-blue-500 focus:outline-none"
+                placeholder="http://localhost:11434/v1"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Model</label>
+              <input
+                type="text"
+                value={current.model}
+                onChange={(e) => updateProvider("model", e.target.value)}
+                className="w-full rounded border border-gray-300 px-2 py-1.5 text-sm text-gray-800 focus:border-blue-500 focus:outline-none"
+                placeholder="llama3"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">API Key (optional)</label>
+              <input
+                type="password"
+                value={current.apiKey}
+                onChange={(e) => updateProvider("apiKey", e.target.value)}
+                className="w-full rounded border border-gray-300 px-2 py-1.5 text-sm text-gray-800 focus:border-blue-500 focus:outline-none"
+                placeholder="Not required for local LLMs"
+              />
+            </div>
+            <button
+              type="button"
+              onClick={async () => {
+                setTestStatus("testing");
+                try {
+                  const res = await fetch("/api/chat/test", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      baseUrl: current.baseUrl,
+                      model: current.model,
+                      apiKey: current.apiKey || undefined,
+                    }),
+                  });
+                  const data = await res.json();
+                  setTestStatus(data.ok ? "ok" : "error");
+                  setTestMessage(data.ok ? data.message : data.error);
+                } catch (err) {
+                  setTestStatus("error");
+                  setTestMessage(err instanceof Error ? err.message : "Connection failed");
+                }
+              }}
+              disabled={testStatus === "testing"}
+              className="w-full rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-50"
+            >
+              {testStatus === "testing" ? "Testing..." : "Test Connection"}
+            </button>
+            {testStatus === "ok" && (
+              <p className="text-xs text-green-600">{testMessage}</p>
+            )}
+            {testStatus === "error" && (
+              <p className="text-xs text-red-600">{testMessage}</p>
+            )}
+            <p className="text-xs text-gray-400">Settings are saved per provider automatically.</p>
+          </div>
+        );
+      })()}
 
       <div className="flex-1 overflow-y-auto p-4 space-y-3">
         {messages.length === 0 && !loading && (
